@@ -1,0 +1,14 @@
+[project]
+name = "yolo-torch"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "memory-profiler>=0.61.0",
+    "opencv-python>=4.11.0.86",
+    "psutil>=7.0.0",
+    "python-dotenv>=1.1.1",
+    "roboflow>=1.2.7",
+    "ultralytics>=8.3.193",
+]
