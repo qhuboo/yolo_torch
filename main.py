@@ -121,7 +121,7 @@ def inference_3(video_path):
 
     annotated_frame_2 = frame_2.copy()
     annotated_frame_2 = ellipse_annotator.annotate(
-        scene=annotated_frame_2, detections=all_detections
+        scene=annotated_frame_2, etections=all_detections
     )
     annotated_frame_2 = triangle_annotator.annotate(
         scene=annotated_frame_2, detections=ball_detections
@@ -197,8 +197,8 @@ def tracking(video_path):
     out.release()
 
 
-def crops(video_path):
-    print("Generating crops ...")
+def create_crops(video_path):
+    print("Generating player crops ...")
     # Getting training data for cluster model
     PLAYER_ID = 2
     STRIDE = 30
@@ -209,7 +209,7 @@ def crops(video_path):
     )
 
     crops = []
-    for frame in tqdm(frame_generator_4, desc="collecting cropts"):
+    for frame in tqdm(frame_generator_4, desc="collecting crops"):
         result = model_trained.predict(frame, conf=0.3)[0]
         detections = sv.Detections.from_ultralytics(result)
         detections = detections.with_nms(threshold=0.5, class_agnostic=True)
@@ -217,8 +217,14 @@ def crops(video_path):
         players_crops = [sv.crop_image(frame, xyxy) for xyxy in detections.xyxy]
         crops += players_crops
 
-    grid = sv.plot_images_grid(crops[:100], grid_size=(10, 10))
-    cv2.imwrite("crops_grid.jpg", cv2.cvtColor(grid, cv2.COLOR_RGB2BGR))
+    print(f"Total crops collected: {len(crops)}.")
+
+    out_dir = "./runs/player_crops"
+    os.makedirs(out_dir, exist_ok=True)
+
+    for i, crop in enumerate(crops):
+        filename = os.path.join(out_dir, f"crop_{i:04d}.jpg")
+        cv2.imwrite(filename, crop)
 
 
 def main():
@@ -228,13 +234,14 @@ def main():
 
     video_path = "/home/lucas/Videos/soccer/clip_1000frames.mp4"
 
-    inference_1(video_path)
-    train()
-    inference_2(video_path)
-    inference_3(video_path)
-    tracking(video_path)
-    crops(video_path)
+    # inference_1(video_path)
+    # train()
+    # inference_2(video_path)
+    # inference_3(video_path)
+    # tracking(video_path)
+    create_crops(video_path)
 
 
 if __name__ == "__main__":
     main()
+
