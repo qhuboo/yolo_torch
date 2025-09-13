@@ -6,6 +6,15 @@ from ultralytics import YOLO
 import supervision as sv
 import cv2
 from tqdm import tqdm
+from transformers import AutoProcessor, SiglipVisionModel
+from more_itertools import chunked
+import numpy as np
+import umap
+from sklearn.cluster import KMeans
+import plotly.graph_objects as go
+import base64
+from io import BytesIO
+
 
 load_dotenv()
 
@@ -121,7 +130,7 @@ def inference_3(video_path):
 
     annotated_frame_2 = frame_2.copy()
     annotated_frame_2 = ellipse_annotator.annotate(
-        scene=annotated_frame_2, etections=all_detections
+        scene=annotated_frame_2, detections=all_detections
     )
     annotated_frame_2 = triangle_annotator.annotate(
         scene=annotated_frame_2, detections=ball_detections
@@ -130,7 +139,7 @@ def inference_3(video_path):
     cv2.imwrite("./runs/annotated_frame_2.jpg", annotated_frame_2)
 
 
-def tracking(video_path):
+def inference_with_player_tracking(video_path):
     print("Inference with tracking ...")
     # We will do inference again but this time with the video.
     BALL_ID = 0
@@ -197,7 +206,7 @@ def tracking(video_path):
     out.release()
 
 
-def create_crops(video_path):
+def create_player_crops(video_path):
     print("Generating player crops ...")
     # Getting training data for cluster model
     PLAYER_ID = 2
@@ -225,6 +234,159 @@ def create_crops(video_path):
     for i, crop in enumerate(crops):
         filename = os.path.join(out_dir, f"crop_{i:04d}.jpg")
         cv2.imwrite(filename, crop)
+    return crops
+
+
+def extract_embeddings(crops):
+    SIGLIP_MODEL_PATH = "google/siglip-base-patch16-224"
+
+    EMBEDDINGS_MODEL = SiglipVisionModel.from_pretrained(SIGLIP_MODEL_PATH).to("cuda")
+    EMBEDDINGS_PROCESSOR = AutoProcessor.from_pretrained(SIGLIP_MODEL_PATH)
+
+    BATCH_SIZE = 32
+
+    crops = [sv.cv2_to_pillow(crop) for crop in crops]
+    batches = chunked(crops, BATCH_SIZE)
+    data = []
+
+    with torch.no_grad():
+        for batch in tqdm(batches, desc="embedding extraction"):
+            inputs = EMBEDDINGS_PROCESSOR(images=batch, return_tensors="pt").to("cuda")
+            outputs = EMBEDDINGS_MODEL(**inputs)
+            embeddings = torch.mean(outputs.last_hidden_state, dim=1).cpu().numpy()
+            data.append(embeddings)
+    data = np.concatenate(data)
+    return data
+
+
+def cluster_players_by_team(embeddings):
+    REDUCER = umap.UMAP(n_components=3)
+    CLUSTERING_MODEL = KMeans(n_clusters=2)
+
+    projections = REDUCER.fit_transform(embeddings)
+    clusters = CLUSTERING_MODEL.fit_predict(projections)
+
+    return projections, clusters
+
+
+def save_projection_plot_html(projections, clusters, crops):
+    # inline helper: convert a crop (PIL image) to base64 string
+    def pil_image_to_data_uri(image):
+        buffered = BytesIO()
+        image.save(buffered, format="PNG")
+        img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+        return f"data:image/png;base64,{img_str}"
+
+    # convert crops to base64-encoded URIs
+    image_data_uris = {
+        f"image_{i}": pil_image_to_data_uri(crop) for i, crop in enumerate(crops)
+    }
+    image_ids = np.array([f"image_{i}" for i in range(len(crops))])
+
+    traces = []
+    unique_clusters = np.unique(clusters)
+    for unique_cluster in unique_clusters:
+        mask = clusters == unique_cluster
+        trace = go.Scatter3d(
+            x=projections[mask][:, 0],
+            y=projections[mask][:, 1],
+            z=projections[mask][:, 2],
+            mode="markers+text",  # hard-coded: markers+text
+            text=clusters[mask],
+            customdata=image_ids[mask],
+            name=str(unique_cluster),
+            marker=dict(size=6),
+            hovertemplate="<b>class: %{text}</b><br>image ID: %{customdata}<extra></extra>",
+        )
+        traces.append(trace)
+
+    # make cube axis range
+    min_val = np.min(projections)
+    max_val = np.max(projections)
+    padding = (max_val - min_val) * 0.05
+    axis_range = [min_val - padding, max_val + padding]
+
+    fig = go.Figure(data=traces)
+    fig.update_layout(
+        scene=dict(
+            xaxis=dict(title="X", range=axis_range),
+            yaxis=dict(title="Y", range=axis_range),
+            zaxis=dict(title="Z", range=axis_range),
+            aspectmode="cube",
+        ),
+        width=1000,
+        height=1000,
+        showlegend=True,
+    )
+
+    # embed chart HTML with custom JS for crop preview
+    plotly_div = fig.to_html(
+        full_html=False, include_plotlyjs=False, div_id="scatter-plot-3d"
+    )
+    javascript_code = f"""
+    <script>
+        function displayImage(imageId) {{
+            var imageElement = document.getElementById('image-display');
+            var placeholderText = document.getElementById('placeholder-text');
+            var imageDataURIs = {image_data_uris};
+            imageElement.src = imageDataURIs[imageId];
+            imageElement.style.display = 'block';
+            placeholderText.style.display = 'none';
+        }}
+
+        var chartElement = document.getElementById('scatter-plot-3d');
+        chartElement.on('plotly_click', function(data) {{
+            var customdata = data.points[0].customdata;
+            displayImage(customdata);
+        }});
+    </script>
+    """
+
+    html_template = f"""
+    <!DOCTYPE html>
+    <html>
+        <head>
+            <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+            <style>
+                #image-container {{
+                    position: fixed;
+                    top: 0;
+                    left: 0;
+                    width: 200px;
+                    height: 200px;
+                    padding: 5px;
+                    border: 1px solid #ccc;
+                    background-color: white;
+                    z-index: 1000;
+                    box-sizing: border-box;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    text-align: center;
+                }}
+                #image-display {{
+                    width: 100%;
+                    height: 100%;
+                    object-fit: contain;
+                }}
+            </style>
+        </head>
+        <body>
+            {plotly_div}
+            <div id="image-container">
+                <img id="image-display" src="" alt="Selected image" style="display: none;" />
+                <p id="placeholder-text">Click a data point to display the image</p>
+            </div>
+            {javascript_code}
+        </body>
+    </html>
+    """
+
+    out_path = "./runs/player_clusters.html"
+    with open(out_path, "w") as f:
+        f.write(html_template)
+
+    print(f"Interactive plot saved to {out_path}. Open it in your browser.")
 
 
 def main():
@@ -234,12 +396,15 @@ def main():
 
     video_path = "/home/lucas/Videos/soccer/clip_1000frames.mp4"
 
-    # inference_1(video_path)
-    # train()
-    # inference_2(video_path)
-    # inference_3(video_path)
-    # tracking(video_path)
-    create_crops(video_path)
+    inference_1(video_path)
+    train()
+    inference_2(video_path)
+    inference_3(video_path)
+    inference_with_player_tracking(video_path)
+    crops = create_player_crops(video_path)
+    embeddings = extract_embeddings(crops)
+    projections, clusters = cluster_players_by_team(embeddings)
+    save_projection_plot_html(projections, clusters, crops)
 
 
 if __name__ == "__main__":
