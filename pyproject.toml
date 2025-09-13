@@ -10,5 +10,6 @@ dependencies = [
     "psutil>=7.0.0",
     "python-dotenv>=1.1.1",
     "roboflow>=1.2.7",
+    "tqdm>=4.67.1",
     "ultralytics>=8.3.193",
 ]
