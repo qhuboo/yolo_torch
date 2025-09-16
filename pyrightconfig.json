@@ -1,0 +1,10 @@
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "python.pythonPath": "./.venv/bin/python",
+  "python.analysis": {
+    "typeCheckingMode": "basic",
+    "autoSearchPaths": true,
+    "useLibraryCodeForTypes": true
+  }
+}

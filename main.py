@@ -14,9 +14,15 @@ from sklearn.cluster import KMeans
 import plotly.graph_objects as go
 import base64
 from io import BytesIO
+from classifier import TeamClassifier
 
 
 load_dotenv()
+
+SIGLIP_MODEL_PATH = "google/siglip-base-patch16-224"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+EMBEDDINGS_MODEL = SiglipVisionModel.from_pretrained(SIGLIP_MODEL_PATH).to(DEVICE)
+EMBEDDINGS_PROCESSOR = AutoProcessor.from_pretrained(SIGLIP_MODEL_PATH)
 
 
 def inference_1(video_path):
@@ -228,30 +234,28 @@ def create_player_crops(video_path):
 
     print(f"Total crops collected: {len(crops)}.")
 
-    out_dir = "./runs/player_crops"
-    os.makedirs(out_dir, exist_ok=True)
+    # Save to a file
+    # out_dir = "./runs/player_crops"
+    # os.makedirs(out_dir, exist_ok=True)
 
-    for i, crop in enumerate(crops):
-        filename = os.path.join(out_dir, f"crop_{i:04d}.jpg")
-        cv2.imwrite(filename, crop)
-    return crops
+    # for i, crop in enumerate(crops):
+    #     filename = os.path.join(out_dir, f"crop_{i:04d}.jpg")
+    #     cv2.imwrite(filename, crop)
+
+    # Convert to PIL
+    pil_crops = [sv.cv2_to_pillow(c) for c in crops]
+    return pil_crops
 
 
 def extract_embeddings(crops):
-    SIGLIP_MODEL_PATH = "google/siglip-base-patch16-224"
-
-    EMBEDDINGS_MODEL = SiglipVisionModel.from_pretrained(SIGLIP_MODEL_PATH).to("cuda")
-    EMBEDDINGS_PROCESSOR = AutoProcessor.from_pretrained(SIGLIP_MODEL_PATH)
-
     BATCH_SIZE = 32
 
-    crops = [sv.cv2_to_pillow(crop) for crop in crops]
     batches = chunked(crops, BATCH_SIZE)
     data = []
 
     with torch.no_grad():
         for batch in tqdm(batches, desc="embedding extraction"):
-            inputs = EMBEDDINGS_PROCESSOR(images=batch, return_tensors="pt").to("cuda")
+            inputs = EMBEDDINGS_PROCESSOR(images=batch, return_tensors="pt").to(DEVICE)
             outputs = EMBEDDINGS_MODEL(**inputs)
             embeddings = torch.mean(outputs.last_hidden_state, dim=1).cpu().numpy()
             data.append(embeddings)
@@ -261,7 +265,7 @@ def extract_embeddings(crops):
 
 def cluster_players_by_team(embeddings):
     REDUCER = umap.UMAP(n_components=3)
-    CLUSTERING_MODEL = KMeans(n_clusters=2)
+    CLUSTERING_MODEL = KMeans(n_clusters=2, n_init=10, random_state=42)
 
     projections = REDUCER.fit_transform(embeddings)
     clusters = CLUSTERING_MODEL.fit_predict(projections)
@@ -321,7 +325,7 @@ def save_projection_plot_html(projections, clusters, crops):
 
     # embed chart HTML with custom JS for crop preview
     plotly_div = fig.to_html(
-        full_html=False, include_plotlyjs=False, div_id="scatter-plot-3d"
+        full_html=False, include_plotlyjs=True, div_id="scatter-plot-3d"
     )
     javascript_code = f"""
     <script>
@@ -389,6 +393,119 @@ def save_projection_plot_html(projections, clusters, crops):
     print(f"Interactive plot saved to {out_path}. Open it in your browser.")
 
 
+def resolve_goalkeepers_team_id(players, goalkeepers):
+    players_xy = players.get_anchors_coordinates(sv.Position.BOTTOM_CENTER)
+    goalkeepers_xy = goalkeepers.get_anchors_coordinates(sv.Position.BOTTOM_CENTER)
+
+    team_0_centroid = players_xy[players.class_id == 0].mean(axis=0)
+    team_1_centroid = players_xy[players.class_id == 1].mean(axis=0)
+    goalkeepers_team_id = []
+
+    for gk_xy in goalkeepers_xy:
+        dist_0 = np.linalg.norm(gk_xy - team_0_centroid)
+        dist_1 = np.linalg.norm(gk_xy - team_1_centroid)
+        goalkeepers_team_id.append(0 if dist_0 < dist_1 else 1)
+
+    return np.array(goalkeepers_team_id)
+
+
+def inference_with_goalkeepers(video_path):
+    BALL_ID = 0
+    GOALKEEPER_ID = 1
+    PLAYER_ID = 2
+    REFEREE_ID = 3
+
+    crops = create_player_crops(video_path)
+    embeddings = extract_embeddings(crops)
+
+    REDUCER = umap.UMAP(n_components=3)
+    CLUSTERING_MODEL = KMeans(n_clusters=2, n_init=10, random_state=42)
+
+    projections = REDUCER.fit_transform(embeddings)
+    clustering_model = CLUSTERING_MODEL.fit(projections)
+
+    model_trained = YOLO("./runs/detect/train/weights/best.pt")
+
+    frame_generator = sv.get_video_frames_generator(video_path)
+    frame = next(frame_generator)
+
+    tracker = sv.ByteTrack()
+
+    cap = cv2.VideoCapture(video_path)
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out = cv2.VideoWriter(
+        "./runs/video_tracked_2.mp4", fourcc, fps, (frame_width, frame_height)
+    )
+
+    for frame in frame_generator:
+        result = model_trained.predict(frame, conf=0.3)[0]
+
+        detections = sv.Detections.from_ultralytics(result)
+
+        ball_detections = detections[detections.class_id == BALL_ID]
+        ball_detections.xyxy = sv.pad_boxes(xyxy=ball_detections.xyxy, px=10)
+
+        all_detections = detections[detections.class_id != BALL_ID]
+        all_detections = all_detections.with_nms(threshold=0.5, class_agnostic=True)
+        all_detections = tracker.update_with_detections(detections=all_detections)
+
+        goalkeepers_detections = all_detections[
+            all_detections.class_id == GOALKEEPER_ID
+        ]
+        players_detections = all_detections[all_detections.class_id == PLAYER_ID]
+        referees_detections = all_detections[all_detections.class_id == REFEREE_ID]
+
+        players_crops = [sv.crop_image(frame, xyxy) for xyxy in players_detections.xyxy]
+        player_embeddings = extract_embeddings(players_crops)
+        player_projection = REDUCER.transform(player_embeddings)
+        players_detections.class_id = clustering_model.predict(player_projection)
+
+        goalkeepers_detections.class_id = resolve_goalkeepers_team_id(
+            players_detections, goalkeepers_detections
+        )
+
+        referees_detections.class_id -= 1
+
+        all_detections = sv.Detections.merge(
+            [players_detections, goalkeepers_detections, referees_detections]
+        )
+
+        labels = [f"#{tracker_id}" for tracker_id in all_detections.tracker_id]
+
+        all_detections.class_id = all_detections.class_id.astype(int)
+
+        ellipse_annotator = sv.EllipseAnnotator(
+            color=sv.ColorPalette.from_hex(["#00BFFF", "#FF1493", "#FFD700"]),
+            thickness=2,
+        )
+        label_annotator = sv.LabelAnnotator(
+            color=sv.ColorPalette.from_hex(["#00BFFF", "#FF1493", "#FFD700"]),
+            text_color=sv.Color.from_hex("#000000"),
+            text_position=sv.Position.BOTTOM_CENTER,
+        )
+        triangle_annotator = sv.TriangleAnnotator(
+            color=sv.Color.from_hex("#FFD700"), base=25, height=21, outline_thickness=1
+        )
+
+        annotated_frame = frame.copy()
+        annotated_frame = ellipse_annotator.annotate(
+            scene=annotated_frame, detections=all_detections
+        )
+        annotated_frame = label_annotator.annotate(
+            scene=annotated_frame, detections=all_detections, labels=labels
+        )
+        annotated_frame = triangle_annotator.annotate(
+            scene=annotated_frame, detections=ball_detections
+        )
+
+        out.write(annotated_frame)
+    out.release()
+
+
 def main():
     print("CUDA available:", torch.cuda.is_available())
     if torch.cuda.is_available():
@@ -405,8 +522,8 @@ def main():
     embeddings = extract_embeddings(crops)
     projections, clusters = cluster_players_by_team(embeddings)
     save_projection_plot_html(projections, clusters, crops)
+    inference_with_goalkeepers(video_path)
 
 
 if __name__ == "__main__":
     main()
-
