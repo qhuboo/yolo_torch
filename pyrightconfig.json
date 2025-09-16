@@ -3,7 +3,7 @@
   "venv": ".venv",
   "python.pythonPath": "./.venv/bin/python",
   "python.analysis": {
-    "typeCheckingMode": "basic",
+    "typeCheckingMode": "none",
     "autoSearchPaths": true,
     "useLibraryCodeForTypes": true
   }

@@ -20,3 +20,6 @@ runs/
 
 # Models
 *.pt
+
+# Videos
+*.mp4

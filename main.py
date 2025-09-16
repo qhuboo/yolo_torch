@@ -14,8 +14,6 @@ from sklearn.cluster import KMeans
 import plotly.graph_objects as go
 import base64
 from io import BytesIO
-from classifier import TeamClassifier
-
 
 load_dotenv()
 
@@ -23,20 +21,6 @@ SIGLIP_MODEL_PATH = "google/siglip-base-patch16-224"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 EMBEDDINGS_MODEL = SiglipVisionModel.from_pretrained(SIGLIP_MODEL_PATH).to(DEVICE)
 EMBEDDINGS_PROCESSOR = AutoProcessor.from_pretrained(SIGLIP_MODEL_PATH)
-
-
-def inference_1(video_path):
-    print("Inference 1 ...")
-    frame_generator = sv.get_video_frames_generator(video_path)
-    frame = next(frame_generator)
-
-    # INFERENCE 1
-    # This is the first inference test using the base YOLOv11x model
-    model_base_x = YOLO("yolo11s.pt")
-
-    result_1 = model_base_x.predict(
-        frame, save=True, project="runs", name="inference_1"
-    )[0]
 
 
 def train():
@@ -63,49 +47,7 @@ def train():
     )
 
 
-def inference_2(video_path):
-    print("Inference 2 ...")
-    # Now we use this new model to do inference again.
-    model_trained = YOLO("./runs/detect/train/weights/best.pt")
-
-    frame_generator = sv.get_video_frames_generator(video_path)
-    frame = next(frame_generator)
-
-    box_annotator = sv.BoxAnnotator(
-        color=sv.ColorPalette.from_hex(["#FF8C00", "#00BFFF", "#FF1493", "#FFD700"]),
-        thickness=2,
-    )
-
-    label_annotator = sv.LabelAnnotator(
-        color=sv.ColorPalette.from_hex(["#FF8C00", "#00BFFF", "#FF1493", "#FFD700"]),
-        text_color=sv.Color.from_hex("#000000"),
-    )
-
-    result_2 = model_trained.predict(
-        frame, save=True, project="runs", name="inference_2"
-    )[0]
-
-    detections = sv.Detections.from_ultralytics(result_2)
-
-    labels = [
-        f"{class_name} {confidence:.2f}"
-        for class_name, confidence in zip(
-            detections["class_name"], detections.confidence
-        )
-    ]
-
-    annotated_frame = frame.copy()
-    annotated_frame = box_annotator.annotate(
-        scene=annotated_frame, detections=detections
-    )
-    annotated_frame = label_annotator.annotate(
-        scene=annotated_frame, detections=detections, labels=labels
-    )
-
-    cv2.imwrite("./runs/annotated_frame.jpg", annotated_frame)
-
-
-def inference_3(video_path):
+def inference(video_path):
     print("Inference 3 ...")
     # We do another inference with different annotations
     BALL_ID = 0
@@ -142,7 +84,7 @@ def inference_3(video_path):
         scene=annotated_frame_2, detections=ball_detections
     )
 
-    cv2.imwrite("./runs/annotated_frame_2.jpg", annotated_frame_2)
+    cv2.imwrite("./runs/annotated_frame.jpg", annotated_frame_2)
 
 
 def inference_with_player_tracking(video_path):
@@ -506,17 +448,34 @@ def inference_with_goalkeepers(video_path):
     out.release()
 
 
+def keypoint_detection(video_path):
+    model_trained = YOLO("./runs/detect/train/weights/best.pt")
+    vertex_annotator = sv.VertexAnnotator(color=sv.Color.from_hex("#FF1493"), radius=8)
+
+    frame_generator = sv.get_video_frames_generator(video_path)
+    frame = next(frame_generator)
+
+    result = model_trained.predict(frame, conf=0.3)[0]
+
+    key_points = sv.KeyPoints.from_ultralytics(result)
+
+    annotated_frame = frame.copy()
+    annotated_frame = vertex_annotator.annotate(
+        scene=annotated_frame, key_points=key_points
+    )
+
+    cv2.imwrite(".runs/annotated_frame_keypoint.jpg", annotated_frame)
+
+
 def main():
     print("CUDA available:", torch.cuda.is_available())
     if torch.cuda.is_available():
         print("GPU name:", torch.cuda.get_device_name(0))
 
-    video_path = "/home/lucas/Videos/soccer/clip_1000frames.mp4"
+    video_path = "/home/lucas/Documents/dev/local/yolo_torch/video.mp4"
 
-    inference_1(video_path)
     train()
-    inference_2(video_path)
-    inference_3(video_path)
+    inference(video_path)
     inference_with_player_tracking(video_path)
     crops = create_player_crops(video_path)
     embeddings = extract_embeddings(crops)
