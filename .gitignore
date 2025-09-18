@@ -14,9 +14,11 @@ wheels/
 
 # Datasets
 football-players-detection-20/
+football-field-detection-15/
 
-# Runs
+# Output directories
 runs/
+heatmap/
 
 # Models
 *.pt

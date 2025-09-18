@@ -21,12 +21,14 @@ SIGLIP_MODEL_PATH = "google/siglip-base-patch16-224"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 EMBEDDINGS_MODEL = SiglipVisionModel.from_pretrained(SIGLIP_MODEL_PATH).to(DEVICE)
 EMBEDDINGS_PROCESSOR = AutoProcessor.from_pretrained(SIGLIP_MODEL_PATH)
+ROBOFLOW_API_KEY = os.getenv("ROBOFLOW_API_KEY")
+
+FIELD_DETECTION_MODEL_ID = "football-field-detection-f07vi/14"
 
 
 def train():
     print("Beginning training ...")
     # This is to get the roboflow dataset and train.
-    ROBOFLOW_API_KEY = os.getenv("ROBOFLOW_API_KEY")
     rf = Roboflow(api_key=ROBOFLOW_API_KEY)
 
     project = rf.workspace("roboflow-jvuqo").project("football-players-detection-3zvbc")
@@ -65,7 +67,7 @@ def inference(video_path):
     frame_2 = next(frame_generator_2)
 
     result_3 = model_trained.predict(
-        frame_2, save=True, project="runs", name="inference_3"
+        frame_2, save=True, project="runs", name="inference"
     )[0]
     detections_2 = sv.Detections.from_ultralytics(result_3)
 
@@ -448,8 +450,30 @@ def inference_with_goalkeepers(video_path):
     out.release()
 
 
+def keypoint_detection_train():
+    print("Beginning training ...")
+    # This is to get the roboflow dataset and train.
+    rf = Roboflow(api_key=ROBOFLOW_API_KEY)
+    project = rf.workspace("roboflow-jvuqo").project("football-field-detection-f07vi")
+    version = project.version(15)
+    dataset = version.download("yolov8")
+
+    model_base_s = YOLO("yolo11x-pose.pt")
+    results = model_base_s.train(
+        data="./football-field-detection-15/data.yaml",
+        save=True,
+        epochs=50,
+        plots=True,
+        imgsz=1080,
+        device=0,
+        batch=2,
+        project="runs/keypoint_detect/",
+    )
+
+
 def keypoint_detection(video_path):
-    model_trained = YOLO("./runs/detect/train/weights/best.pt")
+    model_trained = YOLO("./runs/keypoint_detect/train/weights/best.pt")
+
     vertex_annotator = sv.VertexAnnotator(color=sv.Color.from_hex("#FF1493"), radius=8)
 
     frame_generator = sv.get_video_frames_generator(video_path)
@@ -459,12 +483,18 @@ def keypoint_detection(video_path):
 
     key_points = sv.KeyPoints.from_ultralytics(result)
 
-    annotated_frame = frame.copy()
-    annotated_frame = vertex_annotator.annotate(
-        scene=annotated_frame, key_points=key_points
+    filter = key_points.confidence[0] > 0.5
+    frame_reference_points = key_points.xy[0][filter]
+    frame_reference_key_points = sv.KeyPoints(
+        xy=frame_reference_points[np.newaxis, ...]
     )
 
-    cv2.imwrite(".runs/annotated_frame_keypoint.jpg", annotated_frame)
+    annotated_frame = frame.copy()
+    annotated_frame = vertex_annotator.annotate(
+        scene=annotated_frame, key_points=frame_reference_key_points
+    )
+
+    cv2.imwrite("./runs/annotated_frame_keypoint.jpg", annotated_frame)
 
 
 def main():
@@ -474,14 +504,16 @@ def main():
 
     video_path = "/home/lucas/Documents/dev/local/yolo_torch/video.mp4"
 
-    train()
-    inference(video_path)
-    inference_with_player_tracking(video_path)
-    crops = create_player_crops(video_path)
-    embeddings = extract_embeddings(crops)
-    projections, clusters = cluster_players_by_team(embeddings)
-    save_projection_plot_html(projections, clusters, crops)
-    inference_with_goalkeepers(video_path)
+    # train()
+    # inference(video_path)
+    # inference_with_player_tracking(video_path)
+    # crops = create_player_crops(video_path)
+    # embeddings = extract_embeddings(crops)
+    # projections, clusters = cluster_players_by_team(embeddings)
+    # save_projection_plot_html(projections, clusters, crops)
+    # inference_with_goalkeepers(video_path)
+    # keypoint_detection_train()
+    keypoint_detection(video_path)
 
 
 if __name__ == "__main__":

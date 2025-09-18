@@ -21,4 +21,9 @@ dependencies = [
     "transformers>=4.56.1",
     "ultralytics>=8.3.193",
     "umap-learn>=0.5.9.post2",
+    "numba>=0.58",
+    "supervision>=0.26.1",
+    "pandas>=2.3.2",
+    "matplotlib>=3.10.6",
+    "seaborn>=0.13.2",
 ]
