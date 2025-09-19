@@ -1,41 +1,50 @@
 import json
+import networkx as nx
+import matplotlib.pyplot as plt
 from collections import defaultdict
+import os
+from pathlib import Path
 
-from numpy import _1DShapeT
-
-# Load the JSON file
+# Load match events JSON (replace with your actual file path)
 with open(
-    "/home/lucas/Documents/soccer_data/statsbomb/open-data/data/events/3825818.json"
+    "/home/lucas/Documents/soccer_data/statsbomb/open-data/data/events/3825818.json",
+    "r",
 ) as f:
     events = json.load(f)
 
-edges = defaultdict(int)
-player_positions = defaultdict(list)
+# Build mapping from player ID -> player name from the Starting XI event
+player_id_to_name = {}
 
 for ev in events:
-    if ev["type"]["name"] == "Pass":
+    if ev["type"]["name"] == "Starting XI":
+        for lineup in ev["tactics"]["lineup"]:
+            pid = lineup["player"]["id"]
+            name = lineup["player"]["name"]
+            player_id_to_name[pid] = name
+
+# Data structures for passes and positions
+edges = defaultdict(int)  # (passer, recipient) -> count of passes
+player_positions = defaultdict(list)  # player_id -> list of [x, y] positions
+
+TEAM_NAME = "Real Sociedad"
+
+# Extract completed passes
+for ev in events:
+    if ev["type"]["name"] == "Pass" and ev["team"]["name"] == TEAM_NAME:
         passer = ev["player"]["id"]
-        recipient = ev["pass"].get("recipient", {}).get("id")
-        outcome = ev["pass"].get("outcome", {"name": "Complete"})["name"]
+        recipient = ev.get("pass", {}).get("recipient", {}).get("id")
+        outcome = ev.get("pass", {}).get("outcome", {"name": "Complete"})["name"]
 
         if outcome == "Complete" and recipient is not None:
-            # Edge
             edges[(passer, recipient)] += 1
+            start = ev["location"]
+            end = ev["pass"]["end_location"]
+            player_positions[passer].append(start)
+            player_positions[recipient].append(end)
 
-            # Coordinates
-            loc_start = ev["location"]
-            loc_end = ev["pass"]["end_location"]
-
-            # Assign positions to players
-            player_positions[passer].append(loc_start)
-            player_positions[recipient].append(loc_end)
-
-# Compute average location for each player
+# Calculate avg positions
 avg_positions = {}
-for (
-    player_id,
-    coords,
-) in player_positions.items():
+for player_id, coords in player_positions.items():
     xs = [pt[0] for pt in coords]
     ys = [pt[1] for pt in coords]
     avg_positions[player_id] = [sum(xs) / len(xs), sum(ys) / len(ys)]
@@ -48,8 +57,47 @@ links = [
 ]
 
 network = {"nodes": nodes, "links": links}
-
-with open("pass_network.json", "w") as f:
+os.makedirs("pass_network", exist_ok=True)
+with open("./pass_network/pass_network.json", "w") as f:
     json.dump(network, f, indent=2)
 
-print("Pass network exported to pass_network.json")
+# Build NetworkX graph
+G = nx.DiGraph()
+
+# Add nodes with positions
+for pid, pos in avg_positions.items():
+    G.add_node(pid, pos=(pos[0], pos[1]))
+
+# Add edges with weights
+for (src, tgt), count in edges.items():
+    G.add_edge(src, tgt, weight=count)
+
+# Draw graph
+pos = nx.get_node_attributes(G, "pos")
+labels = {pid: player_id_to_name.get(pid, str(pid)) for pid in G.nodes()}
+
+fig, ax = plt.subplots(figsize=(10, 7))
+
+# Draw pitch outline
+ax.set_xlim(0, 120)
+ax.set_ylim(0, 80)
+ax.plot([0, 120, 120, 0, 0], [0, 0, 80, 80, 0], color="black")
+
+# Draw nodes
+nx.draw_networkx_nodes(G, pos, ax=ax, node_color="skyblue", node_size=500)
+
+# Draw edges
+nx.draw_networkx_edges(
+    G,
+    pos,
+    ax=ax,
+    width=[d["weight"] * 0.2 for _, _, d in G.edges(data=True)],
+    alpha=0.7,
+    arrowsize=10,
+)
+
+# Draw player names
+nx.draw_networkx_labels(G, pos, labels=labels, ax=ax, font_size=8)
+
+plt.title("Team Pass Network")
+plt.savefig("./pass_network/pass_network_viz.png", dpi=150, bbox_inches="tight")
