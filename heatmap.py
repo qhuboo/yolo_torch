@@ -8,8 +8,7 @@ from scipy.stats import gaussian_kde
 # === Load the raw tracking data CSV ===
 # NOTE: "header=2" → skip the first two rows (team/labels) and use row 3 as header
 df = pd.read_csv(
-    "/home/lucas/Documents/soccer_data/metrica-sports/sample-data/data/"
-    "Sample_Game_1/Sample_Game_1_RawTrackingData_Away_Team.csv",
+    "./data/Sample_Game_1_RawTrackingData_Away_Team.csv",
     header=2,
 )
 

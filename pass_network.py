@@ -7,7 +7,7 @@ from pathlib import Path
 
 # Load match events JSON (replace with your actual file path)
 with open(
-    "/home/lucas/Documents/soccer_data/statsbomb/open-data/data/events/3825818.json",
+    "./data/3825818.json",
     "r",
 ) as f:
     events = json.load(f)
